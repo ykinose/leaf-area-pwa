@@ -1,6 +1,5 @@
-streamlit>=1.30.0
+streamlit
 opencv-python-headless
 numpy
 Pillow
-streamlit-drawable-canvas==0.9.3
 pillow-heif
