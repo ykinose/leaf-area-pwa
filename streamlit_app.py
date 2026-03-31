@@ -12,7 +12,7 @@ register_heif_opener()
 
 st.set_page_config(page_title="Leaf Area Analyzer", layout="centered")
 
-st.title("🍃 葉の面積解析 (安定稼働版)")
+st.title("🍃 葉の面積解析 (安定版)")
 
 def get_b64_image(img):
     buffered = io.BytesIO()
@@ -37,41 +37,44 @@ if img_file:
     display_h = int(raw_img.height * (display_w / raw_img.width))
     input_image = raw_img.resize((display_w, display_h), Image.LANCZOS)
     
-    # 本物の画像をBase64化（CSS用）
+    # 本物の画像をBase64化
     bg_url = get_b64_image(input_image)
     
-    # 【解決の鍵】1ピクセルだけの透明なダミー画像を作成（ライブラリのバグ回避用）
-    dummy_img = Image.new("RGBA", (display_w, display_h), (0, 0, 0, 0))
-
     st.info("スポンジの4隅をタップしてください。")
 
     # CSSで本物の画像を背後に配置
     st.markdown(
         f"""
         <style>
+        /* キャンバスの親要素に背景画像を設定 */
         .stCanvasContainer {{
-            background-image: url("{bg_url}");
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center;
+            background-image: url("{bg_url}") !important;
+            background-size: contain !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            border: 2px solid #ff4b4b;
+        }}
+        /* キャンバス自体を透明にする */
+        canvas {{
+            background-color: transparent !important;
         }}
         </style>
         """,
         unsafe_allow_html=True
     )
 
-    # background_imageに「透明な画像」を渡すことで、ライブラリを正常動作させる
+    # 【重要】background_imageをNoneにし、エラーの元となる引数をすべて削除
+    # これによりライブラリ内部の画像処理ロジックを完全にバイパスします
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
-        background_image=dummy_img, 
         drawing_mode="point",
         width=display_w,
         height=display_h,
         point_display_radius=10,
         update_freq=50,
-        key="canvas_dummy_fix",
+        key="canvas_pure_bypass",
     )
 
+    # 解析処理（以降は変更なし）
     if canvas_result and canvas_result.json_data:
         objs = canvas_result.json_data.get("objects")
         if objs and len(objs) >= 4:
