@@ -1,96 +1,100 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
 from pillow_heif import register_heif_opener
-from streamlit_image_coordinates import streamlit_image_coordinates
+import io
+import base64
 
 # HEIC対応
 register_heif_opener()
 
 st.set_page_config(page_title="Leaf Area Analyzer", layout="centered")
 
-st.title("🍃 葉の面積解析 (座標可視化版)")
+st.title("🍃 葉の面積解析 (安定稼働版)")
 
-# セッション状態の管理
-if "points" not in st.session_state:
-    st.session_state.points = []
+def get_b64_image(img):
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
 
 # 設定
 with st.sidebar:
     st.header("設定")
     sw = st.number_input("スポンジ幅 (cm)", value=4.0)
     sh = st.number_input("スポンジ高さ (cm)", value=2.6)
-    if st.button("座標をリセット"):
-        st.session_state.points = []
-        st.rerun()
+    px_per_cm2 = (sw * sh) / (400 * 260)
 
-img_file = st.file_uploader("画像を選択", type=['jpg', 'jpeg', 'png', 'heic'])
+img_file = st.file_uploader("画像を選択 (JPG, PNG, HEIC)", type=['jpg', 'jpeg', 'png', 'heic'])
 
 if img_file:
+    # 画像読み込み
     raw_img = Image.open(img_file).convert("RGB")
     
-    # 描画用のコピーを作成して、選択済みの点に赤い丸を描く
-    display_img = raw_img.copy()
-    draw = ImageDraw.Draw(display_img)
-    # スマホでも見やすいように、画像サイズに応じた半径で描画
-    radius = max(display_img.width // 100, 10)
+    # 表示サイズ計算
+    display_w = 700
+    display_h = int(raw_img.height * (display_w / raw_img.width))
+    input_image = raw_img.resize((display_w, display_h), Image.LANCZOS)
     
-    for p in st.session_state.points:
-        # プレビュー上の座標(700px基準)を元画像座標に変換して描画
-        ratio = raw_img.width / 700
-        real_x, real_y = p[0] * ratio, p[1] * ratio
-        draw.ellipse((real_x-radius, real_y-radius, real_x+radius, real_y+radius), fill="red", outline="white")
+    # 本物の画像をBase64化（CSS用）
+    bg_url = get_b64_image(input_image)
+    
+    # 【解決の鍵】1ピクセルだけの透明なダミー画像を作成（ライブラリのバグ回避用）
+    dummy_img = Image.new("RGBA", (display_w, display_h), (0, 0, 0, 0))
 
-    st.subheader(f"1. 4隅をタップ ({len(st.session_state.points)} / 4)")
-    st.info("左上 → 右上 → 右下 → 左下 の順にタップしてください。")
+    st.info("スポンジの4隅をタップしてください。")
 
-    # 画像表示と座標取得
-    value = streamlit_image_coordinates(display_img, width=700, key="coords")
+    # CSSで本物の画像を背後に配置
+    st.markdown(
+        f"""
+        <style>
+        .stCanvasContainer {{
+            background-image: url("{bg_url}");
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-    if value is not None:
-        point = (value["x"], value["y"])
-        if point not in st.session_state.points and len(st.session_state.points) < 4:
-            st.session_state.points.append(point)
-            st.rerun()
+    # background_imageに「透明な画像」を渡すことで、ライブラリを正常動作させる
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        background_image=dummy_img, 
+        drawing_mode="point",
+        width=display_w,
+        height=display_h,
+        point_display_radius=10,
+        update_freq=50,
+        key="canvas_dummy_fix",
+    )
 
-    # 4点揃ったら解析
-    if len(st.session_state.points) == 4:
-        if st.button("✨ 面積を計算する"):
-            # 座標補正
-            ratio = raw_img.width / 700
-            pts = np.float32(st.session_state.points) * ratio
+    if canvas_result and canvas_result.json_data:
+        objs = canvas_result.json_data.get("objects")
+        if objs and len(objs) >= 4:
+            pts = np.float32([[obj["left"], obj["top"]] for obj in objs[:4]])
+            img_array = np.array(input_image)
             
-            # --- 【追加機能】縦横サイズをタップした座標から自動計算 ---
-            # 幅（上辺と下辺の平均）
-            width_auto = (np.linalg.norm(pts[0]-pts[1]) + np.linalg.norm(pts[3]-pts[2])) / 2
-            # 高さ（左辺と右辺の平均）
-            height_auto = (np.linalg.norm(pts[0]-pts[3]) + np.linalg.norm(pts[1]-pts[2])) / 2
-            
-            # 1pxあたりの面積を再計算（スポンジの実寸 / 補正後の総ピクセル数）
-            px_per_cm2 = (sw * sh) / (width_auto * height_auto)
-            
-            # 歪み補正 (タップした範囲の平均的なサイズに投影)
-            dst_pts = np.float32([[0, 0], [width_auto, 0], [width_auto, height_auto], [0, height_auto]])
+            # 歪み補正
+            dst_pts = np.float32([[0, 0], [400, 0], [400, 260], [0, 260]])
             matrix = cv2.getPerspectiveTransform(pts, dst_pts)
-            trimmed = cv2.warpPerspective(np.array(raw_img), matrix, (int(width_auto), int(height_auto)))
+            trimmed = cv2.warpPerspective(img_array, matrix, (400, 260))
             
-            st.divider()
-            st.subheader("2. 解析結果")
-            
-            # 葉の抽出 (HSV)
+            st.subheader("解析結果")
             hsv = cv2.cvtColor(trimmed, cv2.COLOR_RGB2HSV)
-            mask = cv2.inRange(hsv, np.array([25, 30, 30]), np.array([95, 255, 255]))
+            mask = cv2.inRange(hsv, np.array([25, 35, 35]), np.array([95, 255, 255]))
             area = np.sum(mask > 0) * px_per_cm2
             
             col1, col2 = st.columns(2)
             with col1:
-                st.image(trimmed, caption="補正後のスポンジ")
+                st.image(trimmed, caption="補正後")
             with col2:
                 st.image(mask, caption="解析マスク")
             
             st.success(f"推定面積: {area:.4f} cm²")
-            st.write(f"（補正サイズ: {width_auto:.1f} x {height_auto:.1f} px）")
             
-            csv = f"filename,area_cm2,width_px,height_px\n{img_file.name},{area},{width_auto},{height_auto}\n"
+            csv = f"filename,area_cm2\n{img_file.name},{area}\n"
             st.download_button("CSV保存", csv, f"LA_{img_file.name}.csv", "text/csv")
