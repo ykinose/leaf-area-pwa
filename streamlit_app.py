@@ -12,14 +12,12 @@ register_heif_opener()
 
 st.set_page_config(page_title="Leaf Area Analyzer", layout="centered")
 
-st.title("🍃 葉の面積解析 (最終安定版)")
+st.title("🍃 葉の面積解析 (安定稼働版)")
 
-# 【修正の核心】画像をBase64文字列に変換する自前関数
 def get_b64_image(img):
     buffered = io.BytesIO()
     img.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return f"data:image/png;base64,{img_str}"
+    return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
 
 # 設定
 with st.sidebar:
@@ -34,18 +32,20 @@ if img_file:
     # 画像読み込み
     raw_img = Image.open(img_file).convert("RGB")
     
-    # 表示用のリサイズ
-    w, h = raw_img.size
+    # 表示サイズ計算
     display_w = 700
-    display_h = int(h * (display_w / w))
+    display_h = int(raw_img.height * (display_w / raw_img.width))
     input_image = raw_img.resize((display_w, display_h), Image.LANCZOS)
     
-    # 画像を文字列に変換
+    # 本物の画像をBase64化（CSS用）
     bg_url = get_b64_image(input_image)
     
+    # 【解決の鍵】1ピクセルだけの透明なダミー画像を作成（ライブラリのバグ回避用）
+    dummy_img = Image.new("RGBA", (display_w, display_h), (0, 0, 0, 0))
+
     st.info("スポンジの4隅をタップしてください。")
 
-    # CSSで背後に画像を敷く（ライブラリのバグを回避）
+    # CSSで本物の画像を背後に配置
     st.markdown(
         f"""
         <style>
@@ -54,24 +54,22 @@ if img_file:
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center;
-            border: 1px solid #ccc;
         }}
         </style>
         """,
         unsafe_allow_html=True
     )
 
-    # background_image=None にしてライブラリ内のエラーを物理的に遮断
+    # background_imageに「透明な画像」を渡すことで、ライブラリを正常動作させる
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
-        stroke_width=2,
-        background_image=None, 
-        update_freq=50,
+        background_image=dummy_img, 
         drawing_mode="point",
         width=display_w,
         height=display_h,
         point_display_radius=10,
-        key="canvas_final_bypass",
+        update_freq=50,
+        key="canvas_dummy_fix",
     )
 
     if canvas_result and canvas_result.json_data:
@@ -80,14 +78,13 @@ if img_file:
             pts = np.float32([[obj["left"], obj["top"]] for obj in objs[:4]])
             img_array = np.array(input_image)
             
-            # 歪み補正 (400x260px)
+            # 歪み補正
             dst_pts = np.float32([[0, 0], [400, 0], [400, 260], [0, 260]])
             matrix = cv2.getPerspectiveTransform(pts, dst_pts)
             trimmed = cv2.warpPerspective(img_array, matrix, (400, 260))
             
             st.subheader("解析結果")
             hsv = cv2.cvtColor(trimmed, cv2.COLOR_RGB2HSV)
-            # 黄緑〜深緑の範囲を抽出
             mask = cv2.inRange(hsv, np.array([25, 35, 35]), np.array([95, 255, 255]))
             area = np.sum(mask > 0) * px_per_cm2
             
