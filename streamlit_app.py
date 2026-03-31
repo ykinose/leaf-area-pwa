@@ -19,26 +19,27 @@ with st.sidebar:
     sh = st.number_input("スポンジ高さ (cm)", value=2.6)
     px_per_cm2 = (sw * sh) / (400 * 260)
 
-# 画像入力（HEICを追加）
+# 画像入力
 img_file = st.file_uploader("画像を選択 (JPG, PNG, HEIC)", type=['jpg', 'jpeg', 'png', 'heic'])
 
 if img_file:
     # 1. 画像の読み込みとリサイズ
     raw_image = Image.open(img_file).convert("RGB")
     
-    # スマホの高解像度対策：幅1200pxにリサイズ
-    max_width = 1200
+    # 幅を1000pxにリサイズ（整数型を保証）
+    max_width = 1000
     if raw_image.width > max_width:
         ratio = max_width / raw_image.width
-        new_size = (max_width, int(raw_image.height * ratio))
-        input_image = raw_image.resize(new_size, Image.LANCZOS)
+        new_w = int(max_width)
+        new_h = int(raw_image.height * ratio)
+        input_image = raw_image.resize((new_w, new_h), Image.LANCZOS)
     else:
         input_image = raw_image
     
     st.subheader("1. スポンジの4隅をタップ")
     st.info("左上→右上→右下→左下の順で4点をタップしてください。")
     
-    # 2. キャンバスの表示
+    # 2. キャンバスの表示（引数をすべて int 型に強制）
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=2,
@@ -47,13 +48,13 @@ if img_file:
         point_display_radius=12,
         update_freq=10,
         display_toolbar=True,
-        width=input_image.width,
-        height=input_image.height,
-        key="canvas_heic",
+        width=int(input_image.width),
+        height=int(input_image.height),
+        key="canvas_final", # キーを変更してキャッシュをクリア
     )
 
-    # 3. 4点以上タップされたら解析開始
-    if canvas_result.json_data is not None:
+    # 3. 解析開始
+    if canvas_result is not None and canvas_result.json_data is not None:
         objects = canvas_result.json_data.get("objects")
         if objects and len(objects) >= 4:
             pts = []
